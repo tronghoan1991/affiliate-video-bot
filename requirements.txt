@@ -1,36 +1,19 @@
-# ── Telegram Bot ──────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════
+# requirements.txt — CHỈ DÀNH CHO RENDER (Flask + Telegram bot)
+# ══════════════════════════════════════════════════════════════════
+# Render chỉ là "bộ điều phối" — nhận lệnh Telegram, forward sang Colab,
+# nhận callback từ Colab, gửi kết quả về Telegram.
+# Mọi AI/video/audio processing đều chạy trên Colab GPU.
+# KHÔNG cài: torch, diffusers, moviepy, opencv, librosa, ffmpeg...
+
+# ── Telegram Bot ──────────────────────────────────────────────────
 python-telegram-bot==21.6
 
-# ── Web Server (Render) ────────────────────────────────────────────────────────
+# ── Web Server ────────────────────────────────────────────────────
 flask==3.0.3
 gunicorn==22.0.0
 requests==2.32.3
 
-# ── Video Processing ──────────────────────────────────────────────────────────
-moviepy==1.0.3
-imageio==2.34.2
-imageio-ffmpeg==0.5.1
-Pillow==10.4.0
-numpy==1.26.4
-opencv-python-headless==4.10.0.84
-
-# ── Audio ─────────────────────────────────────────────────────────────────────
-pydub==0.25.1
-librosa==0.10.2
-
-# ── AI / ML (dùng trên Colab có GPU) ─────────────────────────────────────────
-# Các gói này chỉ cài trên Colab, không cần trên Render
-# diffusers>=0.30.0
-# transformers>=4.44.0
-# accelerate>=0.34.0
-# safetensors>=0.4.4
-# torch>=2.4.0
-# open-clip-torch>=2.26.1
-# huggingface_hub>=0.24.6
-# tqdm>=4.66.5
-# xformers>=0.0.27
-
-# ── Utilities ─────────────────────────────────────────────────────────────────
+# ── Utilities ─────────────────────────────────────────────────────
 python-dotenv==1.0.1
-schedule==1.2.2
-aiohttp==3.10.5
+Pillow==10.4.0
