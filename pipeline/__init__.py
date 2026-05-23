@@ -1,1 +1,1 @@
-# pipeline package — Affiliate Video Bot v6
+# pipeline — Affiliate Video Bot v7

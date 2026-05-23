@@ -1,183 +1,102 @@
 """
-pipeline/background.py — AI Video Prompt Builder v6 (2026)
-=============================================================================
-Phủ sóng toàn bộ ngành thời trang: Women + Men + Children + Baby + Unisex
-Prompt tối ưu cho:
-  - Wan2.1-I2V-14B-480P (Alibaba — tốt nhất, miễn phí trên HuggingFace)
-  - CogVideoX-5B (Tsinghua — nhanh, VRAM thấp hơn, miễn phí)
-  - AnimateDiff XL (fallback nhẹ nhất, miễn phí)
-  - Stable Video Diffusion (SVD) — ổn định
-=============================================================================
+pipeline/background.py — AI Prompt Builder v7 (10 ngành hàng)
+Sinh prompt tối ưu cho Wan2.1, CogVideoX, AnimateDiff, FLUX.1
 """
+import random
 
-# ── Model Descriptions (người mẫu) ────────────────────────────────────────────
+_STYLES = {
+    "fashion":  "8K ultra-realistic fashion photography, Vietnamese model, cinematic shallow depth of field, magazine editorial quality",
+    "beauty":   "8K beauty photography, Vietnamese woman, soft natural lighting, clean minimal background, professional skincare aesthetic",
+    "health":   "8K wellness lifestyle photography, vibrant healthy energy, clean minimal, natural light, authentic Vietnamese",
+    "home":     "8K interior photography, warm ambient lighting, cozy aesthetic, professional real estate quality",
+    "food":     "8K food photography, vibrant colors, delicious close-up, steam rising, restaurant quality plating",
+    "tech":     "8K product photography, sleek minimal white studio, dramatic product lighting, tech editorial quality",
+    "pet":      "8K pet photography, warm natural light, cute authentic animal moment, joyful playful energy",
+    "sports":   "8K athletic photography, dynamic motion, energy, sweat, determination, editorial sports magazine",
+    "baby":     "8K soft baby photography, pastel tones, natural gentle light, innocent precious moment",
+    "fashion_kids": "8K children's fashion photography, colorful playful, natural light, joyful authentic energy",
+}
 
 _MODELS = {
-    "women":   "Beautiful confident Vietnamese woman in her mid-20s, natural beauty, warm genuine smile, slim build, expressive eyes, relatable yet aspirational presence",
-    "men":     "Handsome confident Vietnamese man in his late 20s, clean-cut, strong jawline, athletic build, authentic masculine energy, natural charisma",
-    "teen_f":  "Stylish Vietnamese teenage girl, bright eyes, youthful energy, natural smile, trendy Gen Z aesthetic",
-    "teen_m":  "Stylish Vietnamese teenage boy, cool confident energy, street-smart look, natural charisma",
-    "kids":    "Adorable Vietnamese child 5-10 years old, bright happy eyes, natural playful energy, cute innocent expression",
-    "baby":    "Adorable Vietnamese baby 0-2 years old, chubby cheeks, big bright eyes, innocent happy expression, soft skin",
-    "couple":  "Attractive Vietnamese couple in their mid-20s, natural chemistry, genuine smiles, complementary styles, couple goals",
-    "family":  "Happy Vietnamese family, parents and children, genuine warmth and love, natural interactions",
+    "women":   "Beautiful confident Vietnamese woman 20s, warm genuine smile, natural beauty, relatable yet aspirational",
+    "men":     "Handsome confident Vietnamese man late 20s, clean-cut, athletic, natural masculine charisma",
+    "children":"Adorable Vietnamese child 5-10 years, bright happy eyes, natural playful energy",
+    "baby":    "Adorable Vietnamese baby 0-2 years, chubby cheeks, big bright eyes, innocent expression",
+    "unisex":  "Attractive Vietnamese couple mid-20s, natural chemistry, genuine smiles",
+    "no_model":"",  # For product-only shots (tech, food, home objects)
 }
 
-# ── Background Scenes ─────────────────────────────────────────────────────────
-
-_BG_MAP = {
-    # ─── WOMEN ────────────────────────────────────────────────────────────────
-    "dress_evening":    "luxury hotel rooftop terrace at dusk, panoramic HCMC skyline, bokeh city lights, blooming white orchids, warm amber uplighting, glamorous atmosphere",
-    "dress_casual":     "vibrant Saigon street art district at golden hour, colorful murals, warm amber sunlight, trendy café backdrop",
-    "ao_dai":           "Hoan Kiem Lake embankment at golden hour, ancient Ngoc Son Temple background, lotus blossoms, warm Vietnamese light, timeless cultural beauty",
-    "swimwear_women":   "pristine Phu Quoc white sand beach, crystal-clear turquoise water, coconut palms, natural warm sunlight, paradise vacation atmosphere",
-    "women_activewear": "premium boutique fitness studio in HCMC, floor-to-ceiling mirrors, soft professional lighting, clean white polished concrete",
-    "women_coat":       "charming French colonial street in Hanoi Old Quarter at dusk, warm amber café lights, gentle mist, cozy romantic winter aesthetic",
-    "women_suit":       "sleek modern co-working space HCMC, floor-to-ceiling glass windows, city skyline, warm morning light, professional atmosphere",
-    "skirt_midi":       "elegant open-air mall promenade, blooming pink bougainvillea, warm afternoon light, premium lifestyle district",
-    "top_trendy":       "rooftop pool bar HCMC, infinity pool, city skyline, golden hour light, aspirational urban lifestyle",
-    "women_streetwear": "vibrant District 1 alley wall art, authentic street culture backdrop, graffiti murals, urban Gen Z energy",
-    "women_luxury":     "luxury department store marble interior, designer boutique backdrop, high fashion atmosphere, aspirational shopping",
-
-    # ─── MEN ──────────────────────────────────────────────────────────────────
-    "men_suit":         "sleek glass-fronted CBD office building in HCMC, professional morning light, executive atmosphere, polished marble lobby",
-    "men_tshirt":       "authentic Saigon street café, vintage scooters, warm afternoon light, local lifestyle authenticity",
-    "men_hoodie":       "urban rooftop at sunset, city skyline, creative workspace vibes, modern urban atmosphere",
-    "men_sportswear":   "modern gym interior, weight rack background, motivational atmosphere, clean athletic space",
-    "men_traditional":  "Hanoi Old Quarter street at golden hour, ancient banyan tree, traditional Vietnamese architecture, cultural heritage",
-    "men_streetwear":   "underground skate park, urban street scene, authentic street culture backdrop, Gen Z energy",
-
-    # ─── CHILDREN ─────────────────────────────────────────────────────────────
-    "kids_casual":      "bright colorful indoor playground, natural lighting, cheerful educational toys background, warm family atmosphere",
-    "kids_dress":       "beautiful garden park, blooming flowers, warm natural sunlight, magical childhood atmosphere",
-    "kids_traditional": "traditional Vietnamese house courtyard, Tet decorations, red lanterns, festive New Year atmosphere, kumquat trees",
-    "kids_school":      "bright modern classroom, colorful educational posters, warm natural lighting, positive learning environment",
-
-    # ─── BABY ─────────────────────────────────────────────────────────────────
-    "baby_onesie":      "soft pastel nursery room, dreamy bokeh fairy lights, plush toys, warm golden morning light, safe cozy atmosphere",
-    "baby_set":         "warm wooden bedroom interior, natural cotton sheets, soft morning light, safe natural baby environment",
-
-    # ─── UNISEX / COUPLE / FAMILY ─────────────────────────────────────────────
-    "couple_set":       "romantic rooftop café in Da Lat, fairy lights bokeh, misty mountain backdrop, couple goals atmosphere",
-    "family_matching":  "beautiful city park in HCMC, lush green trees, warm afternoon light, happy family outing",
-    "unisex_genz":      "vibrant youth street festival, colorful backdrop, Gen Z energy, urban art district",
+_BACKGROUNDS = {
+    "fashion_formal":       "sleek glass CBD office HCMC, marble lobby, morning light",
+    "fashion_casual":       "vibrant Saigon street art district golden hour, colorful murals",
+    "fashion_streetwear":   "underground urban skate park, authentic street culture backdrop",
+    "fashion_sportswear":   "premium boutique gym HCMC, floor-to-ceiling mirrors, clean white",
+    "fashion_traditional":  "Hoan Kiem Lake embankment golden hour, ancient temple, lotus blossoms",
+    "fashion_luxury":       "luxury department store marble interior, high fashion atmosphere",
+    "fashion_swimwear":     "pristine Phu Quoc white sand beach, crystal turquoise water",
+    "beauty_skincare":      "minimalist white vanity, soft morning window light, clean aesthetic",
+    "beauty_makeup":        "luxurious makeup studio, warm ring light, beauty blogger aesthetic",
+    "health_supplement":    "bright modern kitchen, healthy food ingredients, clean minimal",
+    "health_fitness":       "premium gym interior, motivational atmosphere, clean athletic",
+    "home_decor":           "beautiful modern living room HCMC, warm ambient lighting, cozy",
+    "home_kitchen":         "sleek modern kitchen, marble countertop, warm morning light",
+    "food_snack":           "cozy aesthetic café table, soft natural light, artisan food styling",
+    "food_drink":           "trendy bubble tea shop, pastel interior, Gen Z aesthetic",
+    "tech_phone":           "ultra-clean white desk setup, minimal accessories, pro studio light",
+    "tech_gaming":          "gaming setup RGB, dark room, dramatic lighting, pro gamer aesthetic",
+    "pet_dog":              "bright sunny garden, green grass, happy playful dog moment",
+    "pet_cat":              "cozy home interior, soft blanket, peaceful cat moment, warm light",
+    "sports_gym":           "modern gym interior, weight equipment, motivational atmosphere",
+    "sports_outdoor":       "beautiful outdoor park Ho Chi Minh City, morning run, fresh air",
+    "baby_nursery":         "soft pastel nursery, fairy lights bokeh, plush toys, golden morning",
+    "fashion_kids_play":    "colorful indoor playground, educational toys, warm family atmosphere",
 }
 
-_DEFAULT_BG = "beautiful Vietnamese urban lifestyle setting, warm natural lighting, authentic modern atmosphere"
-
-# ── Motion Descriptions ────────────────────────────────────────────────────────
-
-_MOTION_MAP = {
-    "dress_evening":    "elegant slow spin 360°, fabric flowing gracefully in gentle breeze, confident runway walk toward camera",
-    "dress_casual":     "natural confident walk, gentle hair toss, authentic lifestyle movement, slight dress sway",
-    "ao_dai":           "graceful slow turn showing full ao dai, gentle breeze creating fabric flow, traditional elegant movement",
-    "swimwear_women":   "confident beach walk, gentle waves backdrop, natural sun-kissed movement, carefree vacation energy",
-    "women_activewear": "dynamic stretch and flex movements, athletic confident pose, high-energy workout energy",
-    "women_suit":       "confident power walk toward camera, professional authority presence, strong purposeful movement",
-    "men_suit":         "confident power walk through office lobby, jacket adjustment, authoritative executive presence",
-    "men_tshirt":       "casual relaxed movement, natural lifestyle gesture, authentic street photography feel",
-    "men_sportswear":   "dynamic athletic movement, workout energy, confident gym presence",
-    "kids_casual":      "playful natural movement, genuine childhood energy, joyful authentic expression",
-    "baby_onesie":      "gentle peaceful baby movement, soft natural gestures, innocent playful energy",
-    "couple_set":       "natural couple interaction, genuine chemistry, walking together, sharing authentic moment",
-    "family_matching":  "happy family interaction, natural warmth, authentic family moments, genuine joy",
+_MOTIONS = {
+    "fashion":  "natural confident model walk, fabric flowing in breeze, slight hair toss, authentic lifestyle movement",
+    "beauty":   "gentle skincare application, close-up skin reveal, finger touches product, transformation moment",
+    "health":   "energetic athletic movement, product reveal, person drinking/taking supplement, before-after reveal",
+    "home":     "slow pan across beautiful room, product detail reveal, hand interacts with item, cozy atmosphere",
+    "food":     "slow motion pour, steam rising, hand reaches for food, delicious close-up bite reveal",
+    "tech":     "sleek product reveal, hand picks up device, screen lights up, feature demonstration",
+    "pet":      "pet reacts to product, playful animal movement, owner interacts with pet, joyful moment",
+    "sports":   "dynamic athletic motion, product in use during exercise, powerful confident movement",
+    "baby":     "gentle baby movement, peaceful sleeping, parent holding baby, soft innocent gestures",
+    "fashion_kids": "playful natural child movement, genuine laughter, joyful running, authentic kid energy",
 }
 
-_DEFAULT_MOTION = "natural confident movement, authentic lifestyle presence, smooth camera reveal"
-
-# ── Negative Prompt ────────────────────────────────────────────────────────────
-
-_NEGATIVE_PROMPT = (
-    "blurry, low quality, distorted face, ugly, bad anatomy, deformed body, "
-    "extra limbs, missing limbs, watermark, text overlay, logo, brand name, "
-    "nsfw, explicit, nude, violent, gore, bad lighting, overexposed, underexposed, "
-    "cartoon, anime, illustration, painting, sketch, drawing, artificial looking, "
-    "plastic skin, unnatural colors, bad proportions, duplicate, clone"
+_NEGATIVE = (
+    "blurry, low quality, distorted face, bad anatomy, watermark, text overlay, "
+    "logo, nsfw, explicit, bad lighting, overexposed, underexposed, "
+    "cartoon, anime, artificial, plastic skin, bad proportions"
 )
 
-# ── Full Prompt Builder ────────────────────────────────────────────────────────
+def _bg_key(category: str, subcategory: str = "") -> str:
+    key = f"{category}_{subcategory}"
+    if key in _BACKGROUNDS: return key
+    return next((k for k in _BACKGROUNDS if k.startswith(f"{category}_")), list(_BACKGROUNDS.keys())[0])
 
-_QUALITY_SUFFIX = (
-    "8K ultra-realistic, cinematic quality, professional fashion photography, "
-    "shallow depth of field, perfect lighting, magazine editorial quality, "
-    "authentic Vietnamese model, natural skin texture"
-)
-
-
-def _garment_key_from_analysis(garment_key: str) -> str:
-    mapping = {
-        "women_formal":     "women_suit",
-        "women_casual":     "dress_casual",
-        "women_streetwear": "women_streetwear",
-        "women_sportswear": "women_activewear",
-        "women_traditional":"ao_dai",
-        "women_luxury":     "women_luxury",
-        "women_swimwear":   "swimwear_women",
-        "men_formal":       "men_suit",
-        "men_casual":       "men_tshirt",
-        "men_streetwear":   "men_streetwear",
-        "men_sportswear":   "men_sportswear",
-        "men_traditional":  "men_traditional",
-        "children_casual":  "kids_casual",
-        "children_formal":  "kids_dress",
-        "children_traditional": "kids_traditional",
-        "baby_casual":      "baby_onesie",
-        "unisex_casual":    "couple_set",
-    }
-    return mapping.get(garment_key, garment_key)
-
-
-def get_background_prompt(garment_key: str) -> str:
-    bg_key = _garment_key_from_analysis(garment_key)
-    return _BG_MAP.get(bg_key, _DEFAULT_BG)
-
-
-def get_motion_prompt(garment_key: str) -> str:
-    bg_key = _garment_key_from_analysis(garment_key)
-    return _MOTION_MAP.get(bg_key, _DEFAULT_MOTION)
-
-
-def get_model_description(gender: str, sub: str = "") -> str:
-    key = sub if sub in _MODELS else gender
-    return _MODELS.get(key, _MODELS["women"])
-
-
-def get_negative_prompt() -> str:
-    return _NEGATIVE_PROMPT
-
-
-def get_full_prompt(garment_key: str, gender: str, product_name: str = "", colors: list = None, material: str = "") -> str:
-    """Tổng hợp full prompt tối ưu cho AI video generation."""
-    model_desc = get_model_description(gender)
-    bg         = get_background_prompt(garment_key)
-    motion     = get_motion_prompt(garment_key)
+def get_main_prompt(category: str, gender: str, product_name: str = "",
+                    colors: list = None, material: str = "", subcategory: str = "") -> str:
+    style   = _STYLES.get(category, _STYLES["fashion"])
+    model   = _MODELS.get(gender, _MODELS["women"])
+    bg_key  = _bg_key(category, subcategory)
+    bg      = _BACKGROUNDS.get(bg_key, "beautiful Vietnamese urban setting")
+    motion  = _MOTIONS.get(category, _MOTIONS["fashion"])
 
     color_str    = f", {', '.join(colors[:2])}" if colors else ""
-    material_str = f", {material}" if material else ""
-    product_str  = f"wearing {product_name}" if product_name else "wearing stylish outfit"
+    mat_str      = f", {material}" if material else ""
+    product_str  = f"with {product_name}" if product_name else "with product"
 
-    return (
-        f"{model_desc}, {product_str}{color_str}{material_str}. "
-        f"Background: {bg}. "
-        f"Movement: {motion}. "
-        f"{_QUALITY_SUFFIX}"
-    )
+    parts = [p for p in [model, f"{product_str}{color_str}{mat_str}"] if p]
+    return f"{', '.join(parts)}. Background: {bg}. Movement: {motion}. {style}"
 
+def get_hook_prompt(category: str, gender: str = "women") -> str:
+    model = _MODELS.get(gender, _MODELS["women"])
+    bg_key = _bg_key(category)
+    bg = _BACKGROUNDS.get(bg_key, "beautiful Vietnamese setting")
+    style = _STYLES.get(category, _STYLES["fashion"])
+    return f"Close-up dramatic reveal: {model}, looking directly at camera with curiosity and warmth. Background: {bg}. Scroll-stopping first impression. {style}"
 
-def get_hook_frame_prompt(garment_key: str, gender: str = "women") -> str:
-    """Prompt cho frame đầu tiên (hook frame) — cần thu hút nhất."""
-    model_desc = get_model_description(gender)
-    bg_key     = _garment_key_from_analysis(garment_key)
-    bg         = _BG_MAP.get(bg_key, _DEFAULT_BG)
-    return (
-        f"Close-up dramatic reveal shot: {model_desc}, "
-        f"looking directly at camera with confidence and warmth, "
-        f"Background: {bg}, "
-        f"dramatic lighting, scroll-stopping first impression, "
-        f"{_QUALITY_SUFFIX}"
-    )
-
-
-def get_loop_prompt(garment_key: str, gender: str = "women") -> str:
-    """Prompt cho frame loop cuối — cần khớp với frame đầu để tạo loop liền mạch."""
-    return get_full_prompt(garment_key, gender) + ", seamless loop end frame, matching opening composition"
+def get_negative_prompt() -> str:
+    return _NEGATIVE
