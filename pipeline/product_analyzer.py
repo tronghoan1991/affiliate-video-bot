@@ -311,9 +311,9 @@ def analyze_product(
             texts = tokenizer(candidates).to(device)
             import torch.nn.functional as F
             with torch.no_grad():
-                if = model.encode_image(img)
+                img_feat = model.encode_image(img)
                 tf = model.encode_text(texts)
-                if_ = if / if.norm(dim=-1, keepdim=True)
+                if_ = img_feat / img_feat.norm(dim=-1, keepdim=True)
                 tf_ = tf / tf.norm(dim=-1, keepdim=True)
                 sims = (if_ @ tf_.T).squeeze(0)
             top_idx = sims.argmax().item()
