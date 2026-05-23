@@ -1,3 +1,0 @@
-# requirements_dispatcher.txt — Chạy trên Replit (không cần GPU)
-python-telegram-bot==21.5
-aiohttp>=3.10.0
