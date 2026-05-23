@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: affiliate-video-bot
+    name: affiliate-video-bot-v7
     runtime: docker
     dockerfilePath: ./Dockerfile
     region: singapore
@@ -8,15 +8,15 @@ services:
     healthCheckPath: /ping
     envVars:
       - key: TELEGRAM_TOKEN
-        sync: false      # Điền tay trong Render Dashboard
+        sync: false
       - key: RENDER_URL
-        sync: false      # URL của service này, ví dụ: https://affiliate-video-bot.onrender.com
+        sync: false
       - key: PIXABAY_API_KEY
-        sync: false      # Lấy miễn phí tại pixabay.com/api
+        sync: false
       - key: NGROK_AUTH_TOKEN
-        sync: false      # Lấy miễn phí tại ngrok.com
+        sync: false
       - key: COLAB_SECRET
-        value: affiliatebot_v6_secret
+        value: affiliatebot_v7_secret
       - key: VIDEO_ENGINE
         value: auto
       - key: DEFAULT_PLATFORM

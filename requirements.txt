@@ -1,19 +1,7 @@
-# ══════════════════════════════════════════════════════════════════
-# requirements.txt — CHỈ DÀNH CHO RENDER (Flask + Telegram bot)
-# ══════════════════════════════════════════════════════════════════
-# Render chỉ là "bộ điều phối" — nhận lệnh Telegram, forward sang Colab,
-# nhận callback từ Colab, gửi kết quả về Telegram.
-# Mọi AI/video/audio processing đều chạy trên Colab GPU.
-# KHÔNG cài: torch, diffusers, moviepy, opencv, librosa, ffmpeg...
-
-# ── Telegram Bot ──────────────────────────────────────────────────
+# Render chỉ chạy Flask + Telegram bot — AI ở Colab
 python-telegram-bot==21.6
-
-# ── Web Server ────────────────────────────────────────────────────
 flask==3.0.3
 gunicorn==22.0.0
 requests==2.32.3
-
-# ── Utilities ─────────────────────────────────────────────────────
 python-dotenv==1.0.1
 Pillow==10.4.0
