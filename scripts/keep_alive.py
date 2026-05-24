@@ -4,7 +4,7 @@ Render free plan ngủ sau 15 phút không có request.
 Script này chạy từ máy tính hoặc GitHub Actions để ping định kỳ.
 
 Cách dùng:
-  python keep_alive.py --render https://affiliate-video-bot.onrender.com
+  python keep_alive.py --render https://affiliate-studio-v8.onrender.com
   
 Hoặc dùng cron job / GitHub Actions (xem .github/workflows/keep_alive.yml)
 """
