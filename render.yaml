@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: affiliate-video-bot-v7
+    name: affiliate-video-bot
     runtime: docker
     dockerfilePath: ./Dockerfile
     region: singapore
