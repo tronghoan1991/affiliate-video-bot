@@ -1,1 +1,1 @@
-# pipeline — Affiliate Video Bot v7
+# Affiliate Studio v8 — Pipeline Package

@@ -1,120 +1,176 @@
 """
-pipeline/drive_manager.py — Google Drive Asset Manager v7
-Quản lý models, music, fonts, outputs trên Drive 5TB.
+pipeline/drive_manager.py — Google Drive 5TB Manager
+Quản lý models, outputs, products, fonts, music, addons
 """
-import json, logging, os, random, shutil, urllib.request
+import os, io, base64, time, logging, urllib.request
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger("DriveManager")
-DRIVE_ROOT  = Path("/content/drive/MyDrive/AffiliateBot")
-COLAB_CACHE = Path("/tmp/affiliatebot_cache")
+
+DRIVE_ROOT_DEFAULT = "/content/drive/MyDrive/AffiliateStudio"
+
+FOLDER_STRUCTURE = [
+    "models/idm-vton",
+    "models/wan2.1-i2v-14B-480P",
+    "models/cogvideox-5b",
+    "models/flux1-schnell",
+    "models/musicgen-small",
+    "models/fashion",    # thư viện model photos — fashion
+    "models/beauty",
+    "models/health",
+    "models/sports",
+    "models/home",
+    "models/food",
+    "models/pet",
+    "models/baby",
+    "models/male",
+    "models/female",
+    "models/child",
+    "models/unisex",
+    "outputs/videos",
+    "outputs/previews",
+    "outputs/captions",
+    "products",
+    "fonts",
+    "music",
+    "addons",
+]
+
+FONTS = {
+    "Montserrat-Bold.ttf": (
+        "https://github.com/JulietaUla/Montserrat/raw/master"
+        "/fonts/ttf/Montserrat-Bold.ttf"
+    ),
+    "Montserrat-ExtraBold.ttf": (
+        "https://github.com/JulietaUla/Montserrat/raw/master"
+        "/fonts/ttf/Montserrat-ExtraBold.ttf"
+    ),
+    "BeVietnamPro-Bold.ttf": (
+        "https://github.com/letteratic/Be-Vietnam-Pro/raw/main"
+        "/fonts/ttf/BeVietnamPro-Bold.ttf"
+    ),
+}
+
 
 class DriveManager:
-    def __init__(self, root: Path = DRIVE_ROOT):
-        self.drive_root = root
-        self.cache_dir  = COLAB_CACHE
-        self._ensure()
+    def __init__(self, drive_root: str = DRIVE_ROOT_DEFAULT):
+        self.drive_root = Path(drive_root)
+        self._ensure_structure()
 
-    def _ensure(self):
-        for sub in ["models","music","fonts","outputs","backgrounds","assets","cache/pixabay","cache/freesound"]:
-            try: (self.drive_root / sub).mkdir(parents=True, exist_ok=True)
-            except: pass
-        try: self.cache_dir.mkdir(parents=True, exist_ok=True)
-        except: pass
+    def _ensure_structure(self):
+        for folder in FOLDER_STRUCTURE:
+            (self.drive_root / folder).mkdir(parents=True, exist_ok=True)
 
-    @staticmethod
-    def mount_drive(force=False):
-        try:
-            from google.colab import drive
-            if force or not Path("/content/drive/MyDrive").exists():
-                drive.mount("/content/drive", force_remount=force)
-            logger.info("✅ Drive mounted"); return True
-        except ImportError: return False
-        except Exception as e: logger.error(f"Mount fail: {e}"); return False
+    # ── Model photos library ──────────────────────────────────────────────
+    def get_model_photos(self, category: str, gender: str = "unisex") -> list[Path]:
+        """Lấy danh sách ảnh người mẫu từ Drive theo category/gender."""
+        dirs_to_check = [
+            self.drive_root / "models" / category,
+            self.drive_root / "models" / gender,
+            self.drive_root / "models" / "unisex",
+        ]
+        for d in dirs_to_check:
+            if d.exists():
+                photos = list(d.glob("*.jpg")) + list(d.glob("*.png")) + \
+                         list(d.glob("*.jpeg"))
+                if photos:
+                    return sorted(photos)
+        return []
 
-    @property
-    def models_dir(self):  return self.drive_root / "models"
-    @property
-    def music_dir(self):   return self.drive_root / "music"
-    @property
-    def fonts_dir(self):   return self.drive_root / "fonts"
-    @property
-    def outputs_dir(self): return self.drive_root / "outputs"
+    def add_model_photo(self, img_bytes: bytes, category: str,
+                        gender: str = "unisex", name: str = "") -> Path:
+        """Thêm ảnh người mẫu vào thư viện Drive."""
+        folder = self.drive_root / "models" / category
+        folder.mkdir(parents=True, exist_ok=True)
+        fname  = name or f"{gender}_{int(time.time())}.jpg"
+        path   = folder / fname
+        path.write_bytes(img_bytes)
+        logger.info(f"✅ Model photo saved: {path}")
+        return path
 
-    _FONT_URLS = {
-        "Montserrat-Bold.ttf":
-            "https://github.com/JulietaUla/Montserrat/raw/master/fonts/ttf/Montserrat-Bold.ttf",
-        "Montserrat-ExtraBold.ttf":
-            "https://github.com/JulietaUla/Montserrat/raw/master/fonts/ttf/Montserrat-ExtraBold.ttf",
-        "Montserrat-Black.ttf":
-            "https://github.com/JulietaUla/Montserrat/raw/master/fonts/ttf/Montserrat-Black.ttf",
-        "BeVietnamPro-Bold.ttf":
-            "https://github.com/lettersoup/Be-Vietnam-Pro/raw/main/fonts/ttf/BeVietnamPro-Bold.ttf",
-    }
+    # ── Outputs ──────────────────────────────────────────────────────────
+    def save_video(self, video_path: Path, product_name: str) -> Path:
+        out_dir  = self.drive_root / "outputs" / "videos"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        fname    = f"{product_name.replace(' ','_')}_{int(time.time())}.mp4"
+        dst      = out_dir / fname
+        import shutil
+        shutil.copy2(str(video_path), str(dst))
+        return dst
 
-    def get_font_path(self, fn="Montserrat-Bold.ttf") -> Optional[Path]:
-        cache = self.cache_dir / "fonts" / fn
-        drive = self.fonts_dir / fn
-        cache.parent.mkdir(parents=True, exist_ok=True)
-        if cache.exists(): return cache
-        if drive.exists(): shutil.copy2(drive, cache); return cache
-        url = self._FONT_URLS.get(fn)
+    def save_preview(self, img_bytes: bytes, product_name: str) -> Path:
+        out_dir = self.drive_root / "outputs" / "previews"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        fname   = f"{product_name.replace(' ','_')}_{int(time.time())}.jpg"
+        path    = out_dir / fname
+        path.write_bytes(img_bytes)
+        return path
+
+    def save_caption(self, caption: str, product_name: str) -> Path:
+        out_dir = self.drive_root / "outputs" / "captions"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        fname   = f"{product_name.replace(' ','_')}_{int(time.time())}.txt"
+        path    = out_dir / fname
+        path.write_text(caption, encoding="utf-8")
+        return path
+
+    # ── Fonts ─────────────────────────────────────────────────────────────
+    def get_font_path(self, font_name: str) -> Optional[Path]:
+        p = self.drive_root / "fonts" / font_name
+        if p.exists(): return p
+        # Download nếu chưa có
+        url = FONTS.get(font_name)
         if url:
             try:
-                urllib.request.urlretrieve(url, str(drive))
-                shutil.copy2(drive, cache)
-                return cache
-            except Exception as e: logger.warning(f"Font dl fail {fn}: {e}")
+                urllib.request.urlretrieve(url, p)
+                logger.info(f"✅ Font downloaded: {font_name}")
+                return p
+            except Exception as e:
+                logger.warning(f"Font download fail {font_name}: {e}")
         return None
 
-    def get_music_path(self, mood: str) -> Optional[Path]:
-        d = self.music_dir / mood
-        if d.exists():
-            tracks = list(d.glob("*.mp3")) + list(d.glob("*.wav"))
-            if tracks: return random.choice(tracks)
-        for ext in [".mp3", ".wav"]:
-            p = self.music_dir / f"{mood}{ext}"
-            if p.exists(): return p
-        return None
+    def ensure_fonts(self) -> dict:
+        result = {}
+        for fname in FONTS:
+            result[fname] = self.get_font_path(fname)
+        return result
 
-    def save_music(self, mood: str, src: Path, fn: str) -> Path:
-        dest = self.music_dir / mood / fn
-        (self.music_dir / mood).mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dest); return dest
-
-    def download_model(self, model_id: str, local_name: str) -> str:
-        import subprocess
-        dest = str(self.models_dir / local_name)
-        if Path(dest).exists(): logger.info(f"Model exists: {local_name}"); return dest
-        logger.info(f"Downloading {model_id}...")
-        os.makedirs(dest, exist_ok=True)
-        subprocess.run(["huggingface-cli","download",model_id,"--local-dir",dest,"--local-dir-use-symlinks","False"], check=True)
-        return dest
-
-    def new_output_path(self, prefix="video") -> Path:
-        from datetime import datetime
-        day = datetime.now().strftime("%Y%m%d")
-        d   = self.outputs_dir / day
-        d.mkdir(parents=True, exist_ok=True)
-        ts  = datetime.now().strftime("%H%M%S")
-        return d / f"{prefix}_{ts}.mp4"
-
+    # ── Stats ─────────────────────────────────────────────────────────────
     def drive_stats(self) -> dict:
         stats = {}
-        for f in ["models","music","fonts","outputs"]:
-            d = self.drive_root / f
+        for section in ["models", "outputs", "products", "music", "addons"]:
+            d = self.drive_root / section
             if d.exists():
                 files = list(d.rglob("*"))
-                stats[f] = {"files": len([x for x in files if x.is_file()]),
-                            "size_mb": round(sum(x.stat().st_size for x in files if x.is_file())/1_048_576, 1)}
-            else: stats[f] = {"files":0,"size_mb":0}
+                files = [f for f in files if f.is_file()]
+                size  = sum(f.stat().st_size for f in files) / 1e6
+                stats[section] = {
+                    "size_mb": round(size, 1),
+                    "files":   len(files),
+                }
         return stats
 
-def setup_drive(force=False) -> DriveManager:
-    DriveManager.mount_drive(force=force)
-    mgr = DriveManager()
-    logger.info("✅ DriveManager ready")
-    return mgr
+    def list_model_library(self) -> dict:
+        """Liệt kê tất cả ảnh người mẫu trong Drive."""
+        result = {}
+        model_root = self.drive_root / "models"
+        for folder in model_root.iterdir():
+            if folder.is_dir():
+                photos = list(folder.glob("*.jpg")) + \
+                         list(folder.glob("*.png")) + \
+                         list(folder.glob("*.jpeg"))
+                if photos:
+                    result[folder.name] = len(photos)
+        return result
 
-drive_mgr = DriveManager()
+
+# Singleton
+_drive_instance: Optional[DriveManager] = None
+
+def setup_drive(drive_root: str = DRIVE_ROOT_DEFAULT) -> DriveManager:
+    global _drive_instance
+    if _drive_instance is None:
+        _drive_instance = DriveManager(drive_root)
+        logger.info(f"✅ DriveManager initialized: {drive_root}")
+    return _drive_instance
