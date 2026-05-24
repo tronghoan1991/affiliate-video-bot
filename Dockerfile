@@ -1,26 +1,28 @@
 FROM python:3.11-slim
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONDONTWRITEBYTECODE=1
-
-RUN echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80-retries \
- && echo 'Acquire::http::Timeout "60";' >> /etc/apt/apt.conf.d/80-retries
-
-RUN apt-get clean \
- && rm -rf /var/lib/apt/lists/* \
- && apt-get update -o Acquire::ForceIPv4=true \
- && apt-get install -y --no-install-recommends curl \
- && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip \
- && pip install --no-cache-dir -r requirements.txt
+# System deps (minimal for free plan)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc g++ curl \
+    && rm -rf /var/lib/apt/lists/*
 
+# Install Python deps first (layer cache)
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy app
 COPY . .
 
 EXPOSE 5000
 
-CMD ["gunicorn","--bind","0.0.0.0:5000","--workers","1","--timeout","120","--access-logfile","-","app:flask_app"]
+# Gunicorn: 1 worker để tránh OOM trên free plan 512MB
+CMD gunicorn app:flask_app \
+    --bind 0.0.0.0:$PORT \
+    --workers 1 \
+    --threads 4 \
+    --timeout 120 \
+    --keep-alive 5 \
+    --max-requests 500 \
+    --max-requests-jitter 50 \
+    --preload

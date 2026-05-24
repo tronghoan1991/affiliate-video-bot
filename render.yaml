@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: affiliate-video-bot
+    name: affiliate-studio-v8
     runtime: docker
     dockerfilePath: ./Dockerfile
     region: singapore
@@ -9,17 +9,19 @@ services:
     envVars:
       - key: TELEGRAM_TOKEN
         sync: false
+      - key: ALLOWED_USER_IDS
+        sync: false
       - key: RENDER_URL
         sync: false
+      - key: RENDER_DEPLOY_HOOK
+        sync: false
+      - key: COLAB_SECRET
+        value: affiliatestudio_v8_secret
       - key: PIXABAY_API_KEY
+        sync: false
+      - key: FREESOUND_API_KEY
         sync: false
       - key: NGROK_AUTH_TOKEN
         sync: false
-      - key: COLAB_SECRET
-        value: affiliatebot_v7_secret
-      - key: VIDEO_ENGINE
-        value: auto
-      - key: DEFAULT_PLATFORM
-        value: tiktok
       - key: PORT
         value: "5000"

@@ -1,4 +1,4 @@
-# Render chỉ chạy Flask + Telegram bot — AI ở Colab
+# Render server — chỉ Flask + Telegram, không ML
 python-telegram-bot==21.6
 flask==3.0.3
 gunicorn==22.0.0
