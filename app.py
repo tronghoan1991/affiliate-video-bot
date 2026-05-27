@@ -1,12 +1,9 @@
 """
-app.py — Affiliate Studio v8
-FIXED:
-  1. Race condition: _loop thread chưa ready khi _init_bot() chạy
-  2. _run() timeout 30s quá ngắn cho webhook processing, tăng lên 60s
-  3. _run() log đầy đủ traceback thay vì chỉ exception message
-  4. _init_bot() chạy trong background thread sau khi _loop đã sẵn sàng
-  5. Webhook handler không block — fire-and-forget pattern
-  6. httpx connection pool reuse (tránh "connection closed" error)
+app.py — Affiliate Studio v8 (Production Ready)
+Luồng xử lý tối ưu hóa:
+  1. Loại bỏ hoàn toàn Race Condition bằng Persistent Event Loop chuyên biệt.
+  2. Bổ sung lệnh bắt buộc _app.start() phục vụ thư viện python-telegram-bot v20+.
+  3. Cơ chế Fire-and-forget đối với Webhook xử lý bản tin để tránh nghẽn luồng Flask.
 """
 import asyncio, logging, os, threading, time, tempfile, json, base64, traceback
 from pathlib import Path
@@ -296,7 +293,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "*Quy trình:*\n"
         "① `/new` — bắt đầu\n"
         "② Gửi ảnh sản phẩm → bot tách nền\n"
-        "③ Nhập `Tên | Giá | Mô tả | tiktok`\n"
+        "③ Nhập `Tên | Giá | Mô tả | platform`\n"
         "④ Gửi ảnh người mẫu hoặc `/skip`\n"
         "⑤ Nhận video viral 🔥\n\n"
         "Gõ `/help` xem tất cả lệnh",
@@ -443,23 +440,23 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     data  = await pfile.download_as_bytearray()
     b64   = base64.b64encode(bytes(data)).decode()
 
-    if sess["state"] == STATE_WAIT_PRODUCT:
-        sess["product_photo_b64"] = b64
-        sess["state"]             = STATE_WAIT_INFO
-        await update.message.reply_text(
-            "✅ Nhận ảnh sản phẩm!\n\n"
-            "📝 *Bước 2/4 — Nhập thông tin:*\n"
-            "`Tên | Giá | Mô tả | platform`\n\n"
-            "Ví dụ:\n`Váy maxi lụa | 299k | Váy nữ tay dài | tiktok`",
-            parse_mode="Markdown")
-    elif sess["state"] == STATE_WAIT_MODEL:
-        sess["model_photo_b64"] = b64
-        await update.message.reply_text(
-            "✅ Nhận ảnh model! 🔄 Đang gửi sang Colab...")
-        await _dispatch_pipeline(update.message, uid, sess)
-    else:
-        await update.message.reply_text(
-            "💡 Dùng `/new` để bắt đầu.", parse_mode="Markdown")
+        if sess["state"] == STATE_WAIT_PRODUCT:
+            sess["product_photo_b64"] = b64
+            sess["state"]             = STATE_WAIT_INFO
+            await update.message.reply_text(
+                "✅ Nhận ảnh sản phẩm!\n\n"
+                "📝 *Bước 2/4 — Nhập thông tin:*\n"
+                "`Tên | Giá | Mô tả | platform`\n\n"
+                "Ví dụ:\n`Váy maxi lụa | 299k | Váy nữ tay dài | tiktok`",
+                parse_mode="Markdown")
+        elif sess["state"] == STATE_WAIT_MODEL:
+            sess["model_photo_b64"] = b64
+            await update.message.reply_text(
+                "✅ Nhận ảnh model! 🔄 Đang gửi sang Colab...")
+            await _dispatch_pipeline(update.message, uid, sess)
+        else:
+            await update.message.reply_text(
+                "💡 Dùng `/new` để bắt đầu.", parse_mode="Markdown")
 
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid  = update.effective_user.id
@@ -613,10 +610,11 @@ def _init_bot_bg():
         future = asyncio.run_coroutine_threadsafe(_app.initialize(), _loop)
         future.result(timeout=30)
         logger.info("✅ App initialized")
-              # [ĐOẠN CODE THÊM MỚI] Khởi động ứng dụng để xử lý update
+
+        # KHỞI ĐỘNG HỆ THỐNG PHÂN PHỐI BẢN TIN (BẮT BUỘC TRÊN V20+)
         future = asyncio.run_coroutine_threadsafe(_app.start(), _loop)
         future.result(timeout=30)
-        logger.info("✅ App started")
+        logger.info("✅ App started và sẵn sàng xử lý update tin nhắn")
 
         # Set webhook
         webhook_url = f"{Config.RENDER_URL}/webhook"
