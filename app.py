@@ -440,23 +440,23 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     data  = await pfile.download_as_bytearray()
     b64   = base64.b64encode(bytes(data)).decode()
 
-        if sess["state"] == STATE_WAIT_PRODUCT:
-            sess["product_photo_b64"] = b64
-            sess["state"]             = STATE_WAIT_INFO
-            await update.message.reply_text(
-                "✅ Nhận ảnh sản phẩm!\n\n"
-                "📝 *Bước 2/4 — Nhập thông tin:*\n"
-                "`Tên | Giá | Mô tả | platform`\n\n"
-                "Ví dụ:\n`Váy maxi lụa | 299k | Váy nữ tay dài | tiktok`",
-                parse_mode="Markdown")
-        elif sess["state"] == STATE_WAIT_MODEL:
-            sess["model_photo_b64"] = b64
-            await update.message.reply_text(
-                "✅ Nhận ảnh model! 🔄 Đang gửi sang Colab...")
-            await _dispatch_pipeline(update.message, uid, sess)
-        else:
-            await update.message.reply_text(
-                "💡 Dùng `/new` để bắt đầu.", parse_mode="Markdown")
+    if sess["state"] == STATE_WAIT_PRODUCT:
+        sess["product_photo_b64"] = b64
+        sess["state"]             = STATE_WAIT_INFO
+        await update.message.reply_text(
+            "✅ Nhận ảnh sản phẩm!\n\n"
+            "📝 *Bước 2/4 — Nhập thông tin:*\n"
+            "`Tên | Giá | Mô tả | platform`\n\n"
+            "Ví dụ:\n`Váy maxi lụa | 299k | Váy nữ tay dài | tiktok`",
+            parse_mode="Markdown")
+    elif sess["state"] == STATE_WAIT_MODEL:
+        sess["model_photo_b64"] = b64
+        await update.message.reply_text(
+            "✅ Nhận ảnh model! 🔄 Đang gửi sang Colab...")
+        await _dispatch_pipeline(update.message, uid, sess)
+    else:
+        await update.message.reply_text(
+            "💡 Dùng `/new` để bắt đầu.", parse_mode="Markdown")
 
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid  = update.effective_user.id
