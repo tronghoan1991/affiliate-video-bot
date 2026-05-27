@@ -613,6 +613,10 @@ def _init_bot_bg():
         future = asyncio.run_coroutine_threadsafe(_app.initialize(), _loop)
         future.result(timeout=30)
         logger.info("✅ App initialized")
+              # [ĐOẠN CODE THÊM MỚI] Khởi động ứng dụng để xử lý update
+        future = asyncio.run_coroutine_threadsafe(_app.start(), _loop)
+        future.result(timeout=30)
+        logger.info("✅ App started")
 
         # Set webhook
         webhook_url = f"{Config.RENDER_URL}/webhook"
