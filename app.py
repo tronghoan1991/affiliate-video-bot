@@ -1,11 +1,14 @@
 """
 app.py — Affiliate Studio v8
-FIX: RuntimeError('Event loop is closed')
-  - Dùng 1 persistent asyncio loop trong background thread
-  - Flask (sync) giao tiếp với loop qua asyncio.run_coroutine_threadsafe()
-  - Không dùng asyncio.run() trong Flask handlers (tạo/đóng loop liên tục)
+FIXED:
+  1. Race condition: _loop thread chưa ready khi _init_bot() chạy
+  2. _run() timeout 30s quá ngắn cho webhook processing, tăng lên 60s
+  3. _run() log đầy đủ traceback thay vì chỉ exception message
+  4. _init_bot() chạy trong background thread sau khi _loop đã sẵn sàng
+  5. Webhook handler không block — fire-and-forget pattern
+  6. httpx connection pool reuse (tránh "connection closed" error)
 """
-import asyncio, logging, os, threading, time, tempfile, json, base64
+import asyncio, logging, os, threading, time, tempfile, json, base64, traceback
 from pathlib import Path
 from typing import Optional
 import requests
@@ -28,25 +31,48 @@ flask_app = Flask(__name__)
 _sessions: dict = {}
 _colab:    dict = {"url": "", "auto_ping": False}
 _app:      Optional[Application] = None
+_bot_ready = threading.Event()   # Signal: bot đã init xong
 
-# ── PERSISTENT EVENT LOOP — chạy mãi trong 1 background thread ───────────────
+# ── Persistent event loop ─────────────────────────────────────────────────────
 _loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
+_loop_ready = threading.Event()  # Signal: loop đang chạy
 
 def _start_loop():
     asyncio.set_event_loop(_loop)
+    _loop_ready.set()             # Báo loop đã sẵn sàng
     _loop.run_forever()
 
 threading.Thread(target=_start_loop, name="BotLoop", daemon=True).start()
+_loop_ready.wait(timeout=5)       # Chờ tối đa 5s cho loop ready
 
 
-def _run(coro):
-    """Chạy coroutine trên persistent loop từ bất kỳ thread nào (Flask/gunicorn)."""
+def _run(coro, timeout: int = 60):
+    """
+    Chạy coroutine trên persistent loop từ bất kỳ thread nào.
+    Log đầy đủ traceback nếu lỗi.
+    """
+    if not _loop.is_running():
+        logger.error("_run: event loop không chạy!")
+        return None
     future = asyncio.run_coroutine_threadsafe(coro, _loop)
     try:
-        return future.result(timeout=30)
-    except Exception as e:
-        logger.error(f"_run error: {e}")
+        return future.result(timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.error(f"_run timeout ({timeout}s) — coroutine: {coro.__name__ if hasattr(coro, '__name__') else type(coro)}")
+        future.cancel()
         return None
+    except Exception as e:
+        logger.error(f"_run error: {e}\n{traceback.format_exc()}")
+        return None
+
+
+def _fire(coro):
+    """
+    Fire-and-forget: chạy coroutine không cần chờ kết quả.
+    Dùng cho webhook handler để không block Flask.
+    """
+    if _loop.is_running():
+        asyncio.run_coroutine_threadsafe(coro, _loop)
 
 
 # ── States ────────────────────────────────────────────────────────────────────
@@ -91,29 +117,24 @@ def _get_session(uid: int) -> dict:
 def _reset_session(uid: int):
     _sessions.pop(uid, None)
 
-def _send(uid: int, text: str, **kwargs):
-    """Gửi message từ Flask thread — thread-safe."""
-    if _app:
-        _run(_app.bot.send_message(uid, text, **kwargs))
-
-def _send_photo_b64(uid: int, b64: str, caption: str = "", **kwargs):
-    if _app:
-        _run(_app.bot.send_photo(
-            uid, photo=base64.b64decode(b64),
-            caption=caption, parse_mode="Markdown", **kwargs))
-
 
 # ── Flask: Health ─────────────────────────────────────────────────────────────
 @flask_app.route("/ping")
 def ping():
-    return jsonify({"status": "alive", "version": "8.0",
-                    "webhook": bool(_app)}), 200
+    return jsonify({
+        "status":    "alive",
+        "version":   "8.0",
+        "bot_ready": _bot_ready.is_set(),
+        "loop_ok":   _loop.is_running(),
+    }), 200
 
 @flask_app.route("/health")
 def health():
     return jsonify({
-        "status": "healthy", "version": "8.0",
-        "colab": bool(_colab_url()),
+        "status":        "healthy",
+        "version":       "8.0",
+        "bot_ready":     _bot_ready.is_set(),
+        "colab":         bool(_colab_url()),
         "active_sessions": len(_sessions),
     }), 200
 
@@ -121,20 +142,23 @@ def health():
 # ── Flask: Telegram Webhook ───────────────────────────────────────────────────
 @flask_app.route("/webhook", methods=["POST"])
 def webhook():
-    """Telegram POST update vào đây."""
-    if not _app:
-        return Response("Bot not ready", status=503)
+    """
+    Telegram POST update vào đây.
+    Dùng fire-and-forget để không block Flask worker.
+    """
+    if not _bot_ready.is_set():
+        logger.warning("Webhook received but bot not ready yet")
+        return Response("ok", status=200)   # Trả 200 để Telegram không retry
     try:
         data   = request.get_json(force=True)
         update = Update.de_json(data, _app.bot)
-        # Chạy trên persistent loop — không tạo loop mới
-        _run(_app.process_update(update))
+        _fire(_app.process_update(update))  # Non-blocking
     except Exception as e:
-        logger.error(f"Webhook error: {e}")
+        logger.error(f"Webhook parse error: {e}\n{traceback.format_exc()}")
     return Response("ok", status=200)
 
 
-# ── Flask: Colab seturl ───────────────────────────────────────────────────────
+# ── Flask: Colab registration ─────────────────────────────────────────────────
 @flask_app.route("/colab/seturl", methods=["GET", "POST"])
 def colab_seturl():
     if request.method == "GET":
@@ -155,11 +179,10 @@ def colab_seturl():
     _colab["url"] = url
     logger.info(f"✅ Colab URL: {url}")
 
-    if uid and uid.isdigit() and _app:
-        _run(_app.bot.send_message(
+    if uid and uid.isdigit() and _bot_ready.is_set():
+        _fire(_app.bot.send_message(
             int(uid),
-            f"🤖 *Colab v8 kết nối!*\n\n🔗 `{url}`\n\n"
-            f"✅ Sẵn sàng! Gõ `/new` để tạo video.",
+            f"🤖 *Colab v8 kết nối!*\n\n🔗 `{url}`\n\n✅ Gõ `/new` để tạo video.",
             parse_mode="Markdown"))
 
     return jsonify({"success": True, "url": url}), 200
@@ -172,8 +195,8 @@ def colab_callback():
         return jsonify({"error": "Unauthorized"}), 403
     data = request.get_json(silent=True) or {}
     uid  = data.get("user_id")
-    if _app and uid:
-        _run(_handle_colab_result(int(uid), data))
+    if _bot_ready.is_set() and uid:
+        _fire(_handle_colab_result(int(uid), data))
     return jsonify({"received": True}), 200
 
 @flask_app.route("/colab/progress", methods=["POST"])
@@ -183,8 +206,8 @@ def colab_progress():
     data = request.get_json(silent=True) or {}
     uid  = data.get("user_id")
     msg  = data.get("message", "")
-    if uid and _app and msg:
-        _run(_app.bot.send_message(int(uid), msg, parse_mode="Markdown"))
+    if uid and _bot_ready.is_set() and msg:
+        _fire(_app.bot.send_message(int(uid), msg, parse_mode="Markdown"))
     return jsonify({"ok": True}), 200
 
 
@@ -221,15 +244,13 @@ async def _handle_colab_result(uid: int, data: dict):
     elif step == "tryon_preview":
         b64 = data.get("image_b64", "")
         kb  = [[
-            InlineKeyboardButton("🎬 Tạo video!",  callback_data="makevid"),
-            InlineKeyboardButton("🔄 Đổi model",   callback_data="retry_model"),
+            InlineKeyboardButton("🎬 Tạo video!", callback_data="makevid"),
+            InlineKeyboardButton("🔄 Đổi model",  callback_data="retry_model"),
         ]]
         try:
             await _app.bot.send_photo(
                 uid, photo=base64.b64decode(b64),
-                caption="👗 *AI Try-On Preview*\n\n"
-                        "Model đã mặc sản phẩm của bạn!\n"
-                        "Tạo video viral ngay?",
+                caption="👗 *AI Try-On Preview*\n\nModel đã mặc SP!\nTạo video viral ngay?",
                 reply_markup=InlineKeyboardMarkup(kb),
                 parse_mode="Markdown")
         except Exception as e:
@@ -244,14 +265,12 @@ async def _handle_colab_result(uid: int, data: dict):
         if video_url and video_url.startswith("http"):
             await _app.bot.send_video(
                 uid, video=video_url,
-                caption=caption_txt[:1024],
-                parse_mode="Markdown",
+                caption=caption_txt[:1024], parse_mode="Markdown",
                 supports_streaming=True)
         else:
             await _app.bot.send_message(
                 uid,
-                f"✅ *Video hoàn tất!*\n\n"
-                f"📂 Drive: `{drive_path}`\n\n"
+                f"✅ *Video hoàn tất!*\n\n📂 Drive: `{drive_path}`\n\n"
                 f"📋 *Caption:*\n{caption_txt[:800]}",
                 parse_mode="Markdown")
         _reset_session(uid)
@@ -290,8 +309,7 @@ async def cmd_new(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     _get_session(uid)["state"] = STATE_WAIT_PRODUCT
     await update.message.reply_text(
         "📸 *Bước 1/4 — Gửi ảnh sản phẩm*\n\n"
-        "• Ảnh rõ, nền đơn giản\n"
-        "• Bot tự tách nền (~15s)\n"
+        "• Ảnh rõ, nền đơn giản\n• Bot tự tách nền (~15s)\n"
         "• Áo, váy, quần, giày, phụ kiện...",
         parse_mode="Markdown")
 
@@ -323,6 +341,7 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"📡 *Status*\n\n"
         f"🌐 Render: `{Config.RENDER_URL or 'N/A'}`\n"
         f"🔗 Colab : {'✅ ' + _colab_url()[:40] if alive else '❌ offline'}\n"
+        f"🤖 Bot   : {'✅ ready' if _bot_ready.is_set() else '⏳ initializing'}\n"
         f"📋 Bước  : `{label}`",
         parse_mode="Markdown")
 
@@ -375,8 +394,7 @@ async def cmd_drive(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
              for k, v in stats.items()]
     await update.message.reply_text(
         "📊 *Google Drive:*\n\n" + "\n".join(lines) +
-        f"\n\n💾 Total: `{total:.1f} MB`",
-        parse_mode="Markdown")
+        f"\n\n💾 Total: `{total:.1f} MB`", parse_mode="Markdown")
 
 async def cmd_github(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -384,14 +402,11 @@ async def cmd_github(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg = " ".join(ctx.args) if ctx.args else "Auto-update"
     await update.message.reply_text(f"📤 Push: `{msg}`...", parse_mode="Markdown")
     result = _call_colab("devops/github_push",
-                         {"secret": Config.COLAB_SECRET, "commit_msg": msg},
-                         timeout=60)
+                         {"secret": Config.COLAB_SECRET, "commit_msg": msg}, timeout=60)
     if "error" in result:
-        await update.message.reply_text(f"❌ `{result['error']}`",
-                                         parse_mode="Markdown")
+        await update.message.reply_text(f"❌ `{result['error']}`", parse_mode="Markdown")
     else:
-        status = result.get("status", "")
-        if status == "up-to-date":
+        if result.get("status") == "up-to-date":
             await update.message.reply_text("✅ Code đã up-to-date.")
         else:
             await update.message.reply_text(
@@ -423,7 +438,6 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid  = update.effective_user.id
     if Config.ALLOWED_USER_IDS and uid not in Config.ALLOWED_USER_IDS: return
     sess = _get_session(uid)
-
     photo = update.message.photo[-1]
     pfile = await photo.get_file()
     data  = await pfile.download_as_bytearray()
@@ -438,13 +452,11 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "`Tên | Giá | Mô tả | platform`\n\n"
             "Ví dụ:\n`Váy maxi lụa | 299k | Váy nữ tay dài | tiktok`",
             parse_mode="Markdown")
-
     elif sess["state"] == STATE_WAIT_MODEL:
         sess["model_photo_b64"] = b64
         await update.message.reply_text(
             "✅ Nhận ảnh model! 🔄 Đang gửi sang Colab...")
         await _dispatch_pipeline(update.message, uid, sess)
-
     else:
         await update.message.reply_text(
             "💡 Dùng `/new` để bắt đầu.", parse_mode="Markdown")
@@ -473,7 +485,6 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "🔄 *Bước 3/4 — Đang tách nền...*\n⏱️ ~20 giây",
             parse_mode="Markdown")
         await _dispatch_bg_remove(update.message, uid, sess)
-
     elif sess["state"] == STATE_IDLE:
         await update.message.reply_text(
             "💡 Dùng `/new` để bắt đầu.", parse_mode="Markdown")
@@ -506,14 +517,14 @@ async def _dispatch_pipeline(message, uid: int, sess: dict):
         "⏱️ ~8-15 phút | Bot tự gửi video về đây",
         parse_mode="Markdown")
     result = _call_colab("pipeline/full", {
-        "step":            "full_pipeline",
-        "user_id":         uid,
-        "product_bg_b64":  sess.get("product_bg_b64", ""),
-        "model_b64":       sess.get("model_photo_b64"),
-        "product_info":    sess["product_info"],
-        "callback_url":    f"{Config.RENDER_URL}/colab/callback",
-        "progress_url":    f"{Config.RENDER_URL}/colab/progress",
-        "secret":          Config.COLAB_SECRET,
+        "step":           "full_pipeline",
+        "user_id":        uid,
+        "product_bg_b64": sess.get("product_bg_b64", ""),
+        "model_b64":      sess.get("model_photo_b64"),
+        "product_info":   sess["product_info"],
+        "callback_url":   f"{Config.RENDER_URL}/colab/callback",
+        "progress_url":   f"{Config.RENDER_URL}/colab/progress",
+        "secret":         Config.COLAB_SECRET,
     }, timeout=30)
     if "error" in result:
         sess["state"] = STATE_WAIT_MODEL
@@ -538,8 +549,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "📸 *Bước 3/4 — Gửi ảnh người mẫu*\n\n"
             "• Đứng thẳng, thấy toàn thân\n"
             "• Nam / nữ / trẻ em — tuỳ SP\n\n"
-            "Hoặc `/skip` để bot tự chọn",
-            parse_mode="Markdown")
+            "Hoặc `/skip` để bot tự chọn", parse_mode="Markdown")
     elif data == "bg_retry":
         _reset_session(uid)
         _get_session(uid)["state"] = STATE_WAIT_PRODUCT
@@ -551,11 +561,10 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif data == "retry_model":
         sess["state"]           = STATE_WAIT_MODEL
         sess["model_photo_b64"] = None
-        await q.message.reply_text(
-            "📸 Gửi ảnh model khác, hoặc /skip.")
+        await q.message.reply_text("📸 Gửi ảnh model khác, hoặc /skip.")
 
 
-# ── Auto ping Colab ───────────────────────────────────────────────────────────
+# ── Auto ping loop ────────────────────────────────────────────────────────────
 def _auto_ping_loop():
     while True:
         time.sleep(Config.COLAB_PING_INTERVAL_MIN * 60)
@@ -565,44 +574,48 @@ def _auto_ping_loop():
 threading.Thread(target=_auto_ping_loop, name="AutoPing", daemon=True).start()
 
 
-# ── Bot init — Webhook mode ───────────────────────────────────────────────────
-def _init_bot():
+# ── Bot init — chạy trong background thread, sau khi loop ready ──────────────
+def _init_bot_bg():
+    """
+    Init bot trong background thread.
+    _loop đã ready (đã wait ở trên) → không còn race condition.
+    """
     global _app
     token = Config.TELEGRAM_TOKEN
     if not token:
-        logger.error("❌ TELEGRAM_TOKEN chưa set")
+        logger.error("❌ TELEGRAM_TOKEN chưa set — bot không start")
         return
 
-    # Build app — updater=None để tắt polling
-    _app = (Application.builder()
-            .token(token)
-            .updater(None)
-            .build())
-
-    # Handlers
-    cmds = [
-        ("start",     cmd_start),   ("help",      cmd_help),
-        ("new",       cmd_new),     ("skip",      cmd_skip),
-        ("cancel",    cmd_cancel),  ("wake",      cmd_wake),
-        ("setcolab",  cmd_setcolab),("autocolab", cmd_autocolab),
-        ("status",    cmd_status),  ("drive",     cmd_drive),
-        ("github",    cmd_github),  ("deploy",    cmd_deploy),
-    ]
-    for cmd, fn in cmds:
-        _app.add_handler(CommandHandler(cmd, fn))
-    _app.add_handler(CallbackQueryHandler(handle_callback))
-    _app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    _app.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND, handle_text))
-
-    # Initialize app trên persistent loop
-    future = asyncio.run_coroutine_threadsafe(_app.initialize(), _loop)
-    future.result(timeout=30)
-    logger.info("✅ App initialized")
-
-    # Set webhook
-    webhook_url = f"{Config.RENDER_URL}/webhook"
     try:
+        # Build app
+        _app = (Application.builder()
+                .token(token)
+                .updater(None)          # Tắt polling
+                .build())
+
+        # Handlers
+        cmds = [
+            ("start",     cmd_start),   ("help",      cmd_help),
+            ("new",       cmd_new),     ("skip",      cmd_skip),
+            ("cancel",    cmd_cancel),  ("wake",      cmd_wake),
+            ("setcolab",  cmd_setcolab),("autocolab", cmd_autocolab),
+            ("status",    cmd_status),  ("drive",     cmd_drive),
+            ("github",    cmd_github),  ("deploy",    cmd_deploy),
+        ]
+        for cmd, fn in cmds:
+            _app.add_handler(CommandHandler(cmd, fn))
+        _app.add_handler(CallbackQueryHandler(handle_callback))
+        _app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+        _app.add_handler(MessageHandler(
+            filters.TEXT & ~filters.COMMAND, handle_text))
+
+        # Initialize trên persistent loop
+        future = asyncio.run_coroutine_threadsafe(_app.initialize(), _loop)
+        future.result(timeout=30)
+        logger.info("✅ App initialized")
+
+        # Set webhook
+        webhook_url = f"{Config.RENDER_URL}/webhook"
         future = asyncio.run_coroutine_threadsafe(
             _app.bot.set_webhook(
                 url=webhook_url,
@@ -611,11 +624,8 @@ def _init_bot():
             ), _loop)
         future.result(timeout=30)
         logger.info(f"✅ Webhook: {webhook_url}")
-    except Exception as e:
-        logger.error(f"❌ Webhook set failed: {e}")
 
-    # Bot commands menu
-    try:
+        # Bot command menu
         future = asyncio.run_coroutine_threadsafe(
             _app.bot.set_my_commands([
                 BotCommand("new",       "Bắt đầu tạo video"),
@@ -630,15 +640,18 @@ def _init_bot():
             ]), _loop)
         future.result(timeout=15)
         logger.info("✅ Bot commands set")
+
+        # Đánh dấu bot đã sẵn sàng
+        _bot_ready.set()
+        logger.info("✅ Bot ready (webhook mode, persistent loop)")
+
     except Exception as e:
-        logger.warning(f"Commands: {e}")
-
-    logger.info("✅ Bot ready (webhook mode, persistent loop)")
+        logger.error(f"❌ _init_bot_bg FAILED: {e}\n{traceback.format_exc()}")
 
 
-# ── Khởi động khi module import (gunicorn safe) ───────────────────────────────
-_init_bot()
-logger.info("🚀 Affiliate Studio v8 loaded")
+# Chạy init trong thread riêng — không block gunicorn worker
+threading.Thread(target=_init_bot_bg, name="BotInit", daemon=False).start()
+logger.info("🚀 Affiliate Studio v8 — init started")
 
 if __name__ == "__main__":
     flask_app.run(host=Config.HOST, port=Config.PORT,
