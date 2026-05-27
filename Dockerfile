@@ -25,4 +25,3 @@ CMD gunicorn app:flask_app \
     --keep-alive 5 \
     --max-requests 500 \
     --max-requests-jitter 50 \
-    --preload
