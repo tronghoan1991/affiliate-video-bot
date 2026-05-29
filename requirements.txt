@@ -1,7 +1,4 @@
-# Render server — chỉ Flask + Telegram, không ML
-python-telegram-bot==21.6
+python-telegram-bot==21.1.1
+google-generativeai==0.5.2
+pillow==10.3.0
 flask==3.0.3
-gunicorn==22.0.0
-requests==2.32.3
-python-dotenv==1.0.1
-Pillow==10.4.0
