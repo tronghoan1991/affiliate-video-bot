@@ -11,18 +11,42 @@ from threading import Thread
 # ==========================================
 # 1. CẤU HÌNH API KEYS & BIẾN MÔI TRƯỜNG
 # ==========================================
-# (Trên Render, bạn sẽ nhập các biến này trong phần Environment Variables)
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "ĐIỀN_TOKEN_TẠM_VÀO_ĐÂY_NẾU_TEST_LOCAL")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "ĐIỀN_API_KEY_TẠM_VÀO_ĐÂY")
+# Trên Render, bạn sẽ nhập các biến này trong phần Environment Variables
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "ĐIỀN_TOKEN_TELEGRAM_CỦA_BẠN_VÀO_ĐÂY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "ĐIỀN_API_KEY_CỦA_BẠN_VÀO_ĐÂY")
 
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash-latest')
-
-MODEL_PHOTO, PRODUCT_PHOTO, BACKGROUND = range(3)
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 # ==========================================
-# 2. FLASK SERVER (KEEP-ALIVE DÀNH CHO RENDER)
+# 2. CƠ CHẾ TỰ ĐỘNG DÒ TÌM MODEL (Fix lỗi 404)
+# ==========================================
+model_name = 'gemini-1.5-flash' # Mặc định dự phòng
+try:
+    # Quét tất cả các model mà API Key của bạn được phép truy cập
+    available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+    
+    if available_models:
+        # Ưu tiên lấy model 1.5 flash hoặc 1.5 pro nếu có trong danh sách
+        if any('gemini-1.5-flash' in m for m in available_models):
+            model_name = next(m for m in available_models if 'gemini-1.5-flash' in m)
+        elif any('gemini-1.5-pro' in m for m in available_models):
+            model_name = next(m for m in available_models if 'gemini-1.5-pro' in m)
+        else:
+            model_name = available_models[0]
+            
+    logging.info(f"✅ Bot đã kết nối thành công với model: {model_name}")
+except Exception as e:
+    logging.warning(f"⚠️ Không thể tự động quét danh sách model, dùng mặc định. Chi tiết lỗi: {e}")
+
+# Khởi tạo AI Model
+model = genai.GenerativeModel(model_name)
+
+# Định nghĩa các bước trạng thái
+MODEL_PHOTO, PRODUCT_PHOTO, BACKGROUND = range(3)
+
+# ==========================================
+# 3. FLASK SERVER (KEEP-ALIVE DÀNH CHO RENDER)
 # ==========================================
 app = Flask(__name__)
 
@@ -40,7 +64,7 @@ def run_flask():
     app.run(host='0.0.0.0', port=port)
 
 # ==========================================
-# 3. LUỒNG TELEGRAM BOT
+# 4. LUỒNG TRÒ CHUYỆN TELEGRAM BOT
 # ==========================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
@@ -82,7 +106,7 @@ async def generate_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     img_model = context.user_data['model_photo']
     img_product = context.user_data['product_photo']
     
-    # PROMPT CHỈ ĐẠO ĐÃ ĐƯỢC CHUẨN HÓA CẤU TRÚC 100%
+    # PROMPT CHỈ ĐẠO CHO HỆ THỐNG
     system_instruction = f"""
     Bạn là một chuyên gia Prompt Engineering cho các mô hình AI tạo ảnh và video (Imagen 3 / Veo).
     Tôi cung cấp 2 bức ảnh: Ảnh 1 là khuôn mặt người mẫu, Ảnh 2 là trang phục. Bối cảnh: {background_text}.
@@ -114,19 +138,23 @@ async def generate_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     """
     
     try:
+        # Gọi API sinh Content
         response = model.generate_content([system_instruction, img_model, img_product])
+        
+        # Xóa các tag điều hướng để hiển thị văn bản gọn gàng
+        clean_prompt = response.text.replace('[BẮT ĐẦU PROMPT]', '').replace('[KẾT THÚC PROMPT]', '').strip()
         
         final_message = (
             "🎯 **PROMPT HOÀN CHỈNH CỦA BẠN ĐÂY:**\n\n"
             "```text\n"
-            f"{response.text.replace('[BẮT ĐẦU PROMPT]', '').replace('[KẾT THÚC PROMPT]', '').strip()}\n"
+            f"{clean_prompt}\n"
             "```\n\n"
             "👉 Hãy Copy đoạn trên, đính kèm 2 bức ảnh của bạn và gửi cho Gemini App nhé!"
         )
         await update.message.reply_text(final_message, parse_mode='Markdown')
         
     except Exception as e:
-        await update.message.reply_text(f"❌ Có lỗi API: {str(e)}")
+        await update.message.reply_text(f"❌ Có lỗi API: {str(e)}\n\nLỗi này có thể do định dạng ảnh hoặc lỗi kết nối. Hãy thử lại.")
         
     context.user_data.clear()
     return ConversationHandler.END
@@ -136,6 +164,9 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
     return ConversationHandler.END
 
+# ==========================================
+# 5. HÀM MAIN
+# ==========================================
 def main() -> None:
     # 1. Chạy Flask Server ở một Thread riêng
     flask_thread = Thread(target=run_flask)
@@ -144,6 +175,7 @@ def main() -> None:
 
     # 2. Chạy Telegram Bot
     application = Application.builder().token(TELEGRAM_TOKEN).build()
+    
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
@@ -155,7 +187,8 @@ def main() -> None:
     )
 
     application.add_handler(conv_handler)
-    logging.info("Bot is starting...")
+    
+    logging.info("🚀 Bot đang khởi động...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
