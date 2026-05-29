@@ -1,27 +1,15 @@
-FROM python:3.11-slim
+# Sử dụng Python 3.10 siêu nhẹ
+FROM python:3.10-slim
 
+# Thiết lập thư mục làm việc
 WORKDIR /app
 
-# System deps (minimal for free plan)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc g++ curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Python deps first (layer cache)
+# Copy file requirements và cài đặt
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy app
+# Copy toàn bộ mã nguồn vào container
 COPY . .
 
-EXPOSE 5000
-
-# Gunicorn: 1 worker để tránh OOM trên free plan 512MB
-CMD gunicorn app:flask_app \
-    --bind 0.0.0.0:$PORT \
-    --workers 1 \
-    --threads 4 \
-    --timeout 120 \
-    --keep-alive 5 \
-    --max-requests 500 \
-    --max-requests-jitter 50 \
+# Chạy file bot.py
+CMD ["python", "bot.py"]
